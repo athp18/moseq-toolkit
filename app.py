@@ -29,6 +29,7 @@ from viz.cluster_plots import plot_cluster_locations
 from viz.transition_heatmap import plot_transition_heatmap
 from viz.classifier_plots import plot_confusion_matrix, plot_roc, plot_feature_type_comparison
 from viz import mpl_plots
+from ordering import natural_sort
 
 
 st.set_page_config(page_title="MoSeq Toolkit", layout="wide")
@@ -115,10 +116,26 @@ def _sorted_feature_names(names, feature_types):
     return sorted(names, key=str)
 
 
-def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_prefix):
+def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_prefix, timepoint=None, filters=None):
     """Plot a group comparison for one feature_name, with stats annotated on
-    the bars; the full multi-feature stats table loads on demand."""
+    the bars; the full multi-feature stats table loads on demand. `filters`
+    (e.g. {"treatment": "saline"}) pins every other grouping variable to one
+    value first -- e.g. group_col="timepoint" + filters={"treatment": "saline"}
+    compares baseline vs 7dpi vs 30dpi within saline subjects only, instead of
+    pooling every treatment together at each timepoint. `timepoint`, when
+    given, additionally restricts the single-feature plot + its annotation
+    stats to that one timepoint -- pooling a longitudinal dataset's timepoints
+    into one bar would mix a subject's repeated visits together as if they
+    were independent samples. The full stats table below is built from the
+    same filtered data but still covers every timepoint (compare_groups
+    stratifies it automatically)."""
+    if filters:
+        for col, val in filters.items():
+            data_df = data_df[data_df[col] == val]
+
     sub = data_df[data_df["feature_name"] == feature_name]
+    if timepoint is not None:
+        sub = sub[sub["timepoint"] == timepoint]
     if sub.empty:
         st.error(f"No rows for feature_name={feature_name!r}")
         return
@@ -138,11 +155,14 @@ def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_pr
             palette_name=st.session_state["plot_palette"],
             template=PLOT_TEMPLATE,
         )
-    _show_plot(fig, f"{key_prefix}_{feature_name}_{group_col}.pdf")
+    _show_plot(fig, f"{key_prefix}_{feature_name}_{group_col}_{timepoint or 'all'}.pdf")
 
     table_key = f"{key_prefix}_stats_table"
     context_key = f"{key_prefix}_stats_table_context"
-    current_context = (group_col, paired, tuple(sorted(data_df["feature_name"].astype(str).unique())))
+    current_context = (
+        group_col, paired, timepoint, tuple(sorted((filters or {}).items())),
+        tuple(sorted(data_df["feature_name"].astype(str).unique())),
+    )
 
     if st.button("Load stats table", key=f"{table_key}_button"):
         try:
@@ -203,13 +223,53 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
             "Feature", options=sorted(source_df["feature_name"].unique(), key=str), key=feature_name_key,
         )
     with c3:
-        group_col = st.selectbox("Grouping variable", options=group_cols, key=group_col_key) if group_cols else None
+        # "timepoint" is a structural column present in every long-format table
+        # regardless of which group_cols were selected at load time, so it's
+        # always offered here even when group_cols is empty.
+        grouping_options = ["timepoint"] + [c for c in group_cols if c != "timepoint"]
+        group_col = st.selectbox("Grouping variable", options=grouping_options, key=group_col_key)
     with c4:
         paired = st.checkbox("Paired", key=paired_key, help="Treat this as a paired-samples comparison.")
+
+    # Pin any other grouping variable(s) besides the one being compared -- e.g.
+    # group_col="timepoint" + Filter treatment="saline" compares baseline vs
+    # 7dpi vs 30dpi within saline subjects only, instead of pooling both
+    # treatments together at each timepoint. Defaults to "All" (no filter, the
+    # previous pooled behavior) for every dimension except timepoint, which is
+    # handled separately below since pooling it isn't just a marginalization
+    # choice -- it mixes a subject's repeated visits into one sample.
+    filter_dims = [c for c in group_cols if c not in (group_col, "timepoint") and c in source_df.columns]
+    filters = {}
+    if filter_dims:
+        filter_cols = st.columns(len(filter_dims))
+        for col, fcol in zip(filter_dims, filter_cols):
+            with fcol:
+                filter_options = ["All"] + natural_sort(source_df[col].dropna().unique())
+                chosen = st.selectbox(f"Filter: {col}", options=filter_options, key=f"{key_prefix}_filter_{col}")
+                if chosen != "All":
+                    filters[col] = chosen
+
+    # Longitudinal dataset (more than one distinct timepoint) + a non-timepoint
+    # grouping variable: plotting/annotating one bar per group_col category
+    # would otherwise pool every timepoint's rows together, mixing a subject's
+    # repeated visits into the same bar as if they were independent samples.
+    # compare_groups' full stats table below stratifies by timepoint on its
+    # own; this selector is only for the single-feature plot above it.
+    timepoint_key = f"{key_prefix}_timepoint"
+    timepoint = None
+    if group_col != "timepoint" and "timepoint" in source_df.columns and source_df["timepoint"].nunique() > 1:
+        timepoint_options = natural_sort(source_df["timepoint"].dropna().unique())
+        timepoint = st.selectbox(
+            "Timepoint", options=timepoint_options, key=timepoint_key,
+            help="This dataset has multiple timepoints. The plot below shows one "
+                 "timepoint at a time so repeated visits from the same subject "
+                 "aren't pooled into one bar.",
+        )
 
     if st.button("Plot", key=plot_button_key, disabled=group_col is None):
         st.session_state[selection_key] = dict(
             source_label=source_label, feature_name=feature_name, group_col=group_col, paired=paired,
+            timepoint=timepoint, filters=filters,
         )
 
     # Read from session_state, not the button's own `if`, so it survives reruns.
@@ -223,6 +283,7 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
                 stats_key_prefix = f"{key_prefix}_{source_key}"
             _plot_comparison_with_stats(
                 sel_source_df, sel["feature_name"], sel["group_col"], sel["paired"], stats_key_prefix,
+                timepoint=sel.get("timepoint"), filters=sel.get("filters"),
             )
         except ValueError as e:
             st.error(str(e))
@@ -317,12 +378,23 @@ if uploaded is not None:
         st.sidebar.error(f"Could not read file: {e}")
 
 if raw_df is not None:
-    candidate_group_cols = [c for c in raw_df.columns if raw_df[c].dtype == object or raw_df[c].nunique() < 20]
+    # "timepoint" and "SubjectName" are structural columns load_moseq_df already
+    # handles on its own (renamed to subject_id, or promoted to its own dedicated
+    # column) -- selecting either here as a "group_col" collides with that and
+    # breaks loading. "timepoint" is always available as a Grouping variable
+    # everywhere below without needing to be added here.
+    _structural_cols = {"timepoint", "SubjectName"}
+    candidate_group_cols = [
+        c for c in raw_df.columns
+        if c not in _structural_cols and (raw_df[c].dtype == object or raw_df[c].nunique() < 20)
+    ]
     group_cols = st.sidebar.multiselect(
         "Grouping variables",
-        options=list(raw_df.columns),
+        options=[c for c in raw_df.columns if c not in _structural_cols],
         default=[c for c in candidate_group_cols if c in ("treatment", "group", "sex", "genotype")],
-        help="Experimental grouping columns already present in your dataset (e.g. treatment, sex, genotype).",
+        help="Experimental grouping columns already present in your dataset (e.g. treatment, sex, genotype). "
+             "\"timepoint\" doesn't need to be added here -- it's already available as a Grouping variable "
+             "everywhere below.",
     )
     velocity_candidates = [c for c in raw_df.columns if "velocity" in c.lower()]
     velocity_col = st.sidebar.selectbox(
@@ -904,7 +976,8 @@ with tab_classify:
             _section_header(2, "Run")
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                y_col = st.selectbox("Classification target", options=group_cols)
+                y_col_options = ["timepoint"] + [c for c in group_cols if c != "timepoint"]
+                y_col = st.selectbox("Classification target", options=y_col_options)
             with c2:
                 regularization = st.selectbox("Regularization", options=["l2", "l1"], format_func=str.upper)
             with c3:

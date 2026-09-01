@@ -312,7 +312,10 @@ def compare_feature_types(
     Returns a dict with `results` ({name: run() output}) and
     `pairwise_comparisons` (DataFrame [group_a, group_b, statistic, p_value]).
     """
-    labels = long_df[[subject_col, timepoint_col, y_col]].drop_duplicates()
+    # y_col may itself be timepoint_col (e.g. classifying by timepoint) --
+    # dedupe the column list so that doesn't select "timepoint" twice.
+    label_cols = [subject_col, timepoint_col] if y_col == timepoint_col else [subject_col, timepoint_col, y_col]
+    labels = long_df[label_cols].drop_duplicates()
 
     results = {}
     for name, spec in feature_type_sets.items():

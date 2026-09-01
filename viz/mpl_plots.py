@@ -14,6 +14,7 @@ from viz.palette import (
     DEFAULT_CLUSTER_COLORS, DEFAULT_QUALITATIVE_PALETTE, DEFAULT_SEQUENTIAL_COLORSCALE,
     colors_for_categories,
 )
+from ordering import natural_sort
 
 # Plotly colorscale names mapped to their matplotlib cmap equivalents.
 _COLORSCALE_TO_CMAP = {
@@ -49,7 +50,7 @@ def mpl_group_comparison(
             + (f", feature_type={feature_type!r}" if feature_type else "")
         )
 
-    categories = list(order) if order is not None else sorted(data[group_col].dropna().unique(), key=str)
+    categories = list(order) if order is not None else natural_sort(data[group_col].dropna().unique())
     if not categories:
         raise ValueError(f"mpl_group_comparison: no non-null {group_col!r} values to compare")
 

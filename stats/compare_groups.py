@@ -10,6 +10,8 @@ from scipy import stats as sps
 from statsmodels.stats.anova import AnovaRM
 from statsmodels.stats.multitest import multipletests
 
+from ordering import natural_sort
+
 
 def infer_paired(long_df: pd.DataFrame, group_col: str) -> str:
     """"paired" if every subject_id appears at every distinct value of
@@ -40,23 +42,47 @@ def compare_groups(
     feature_types: list[str] | None = None,
     paired: bool = False,
     alpha: float = 0.05,
+    timepoint_col: str = "timepoint",
 ) -> pd.DataFrame:
     """Compare `value` across group_col's categories, once per distinct
     (feature_type, feature_name) in long_df. `paired` is only honored
     per-feature if that feature's subject overlap across group_col is
     actually complete (see infer_paired), else falls back to unpaired.
 
-    Returns a DataFrame with columns: feature_type, feature_name, test,
-    group_a, group_b, statistic, p_value, p_adj, omnibus_p, n_a, n_b --
+    In a longitudinal dataset (more than one distinct timepoint_col value)
+    a comparison on any group_col other than timepoint_col itself is run
+    separately within each timepoint, not pooled across timepoints -- a
+    subject's repeated visits aren't independent samples, so pooling them
+    would both violate that assumption and average away any effect that
+    only shows up at one timepoint. In that case the output gets an extra
+    "timepoint" column. A cross-sectional dataset (single timepoint value,
+    or none) or a comparison on timepoint_col itself behaves as before.
+
+    Returns a DataFrame with columns: feature_type, feature_name, [timepoint,]
+    test, group_a, group_b, statistic, p_value, p_adj, omnibus_p, n_a, n_b --
     one row per pairwise comparison (post-hoc pairs for >2 groups, with
     the omnibus test's p-value repeated in omnibus_p). p_adj is one
     BH-FDR pass across every row this call produces.
     """
     df = long_df if feature_types is None else long_df[long_df["feature_type"].isin(feature_types)]
 
+    stratify = (
+        timepoint_col in df.columns
+        and group_col != timepoint_col
+        and df[timepoint_col].nunique() > 1
+    )
+    group_keys = ["feature_type", "feature_name", timepoint_col] if stratify else ["feature_type", "feature_name"]
+
     records = []
-    for (ftype, fname), sub in df.groupby(["feature_type", "feature_name"]):
-        groups = sorted(sub[group_col].unique())
+    for key, sub in df.groupby(group_keys):
+        if stratify:
+            ftype, fname, tpoint = key
+            tp_field = {"timepoint": tpoint}
+        else:
+            ftype, fname = key
+            tp_field = {}
+
+        groups = natural_sort(sub[group_col].unique())
         if len(groups) < 2:
             continue
 
@@ -87,7 +113,7 @@ def compare_groups(
                     test_name = "Mann-Whitney U"
 
             records.append(dict(
-                feature_type=ftype, feature_name=fname, test=test_name,
+                feature_type=ftype, feature_name=fname, **tp_field, test=test_name,
                 group_a=g_a, group_b=g_b, statistic=stat, p_value=p,
                 omnibus_p=np.nan, n_a=len(x_a), n_b=len(x_b),
             ))
@@ -113,7 +139,7 @@ def compare_groups(
                         a, b = wide[groups[i]].to_numpy(), wide[groups[j]].to_numpy()
                         stat_p, p_p = posthoc(a, b)
                         records.append(dict(
-                            feature_type=ftype, feature_name=fname, test=posthoc_name,
+                            feature_type=ftype, feature_name=fname, **tp_field, test=posthoc_name,
                             group_a=groups[i], group_b=groups[j], statistic=stat_p, p_value=p_p,
                             omnibus_p=omnibus_p, n_a=len(a), n_b=len(b),
                         ))
@@ -133,7 +159,7 @@ def compare_groups(
                         a, b = group_values[groups[i]], group_values[groups[j]]
                         stat_p, p_p = posthoc(a, b)
                         records.append(dict(
-                            feature_type=ftype, feature_name=fname, test=posthoc_name,
+                            feature_type=ftype, feature_name=fname, **tp_field, test=posthoc_name,
                             group_a=groups[i], group_b=groups[j], statistic=stat_p, p_value=p_p,
                             omnibus_p=omnibus_p, n_a=len(a), n_b=len(b),
                         ))

@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from viz.palette import DEFAULT_QUALITATIVE_PALETTE, DEFAULT_TEMPLATE, colors_for_categories, foreground_for_template
 from viz.stats_brackets import add_significance_brackets
 from viz.mpl_style import add_chance_level
+from ordering import natural_sort
 
 
 def _bootstrap_ci(values, ci=68, n_boot=1000, seed=0):
@@ -56,7 +57,7 @@ def plot_group_comparison(
             + (f", feature_type={feature_type!r}" if feature_type else "")
         )
 
-    categories = list(order) if order is not None else sorted(data[group_col].dropna().unique(), key=str)
+    categories = list(order) if order is not None else natural_sort(data[group_col].dropna().unique())
     if not categories:
         raise ValueError(f"plot_group_comparison: no non-null {group_col!r} values to compare")
     position = {cat: i for i, cat in enumerate(categories)}
