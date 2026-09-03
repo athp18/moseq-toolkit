@@ -1,0 +1,9 @@
+[server]
+# Default is 200 (MB). Raised so a large moseq_df upload doesn't get
+# rejected outright. Only takes effect when Streamlit starts, so restart
+# the app after this file is added/changed.
+maxUploadSize = 5000
+maxMessageSize = 5000
+runOnSave = true
+allowRunOnSave = true
+fastReruns = true

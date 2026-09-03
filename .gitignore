@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-.streamlit/
 venv/
 .venv/
 *.egg-info/
