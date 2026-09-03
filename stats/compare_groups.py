@@ -28,8 +28,19 @@ def infer_paired(long_df: pd.DataFrame, group_col: str) -> str:
 
 
 def _shapiro_all_normal(group_values: dict, alpha: float) -> bool:
-    """True only if every group's Shapiro-Wilk test passes (p > alpha)."""
+    """True only if every group's Shapiro-Wilk test passes (p > alpha).
+    A group with fewer than 3 values or zero variance (every value
+    identical -- common for a rarely-used syllable where most subjects
+    show 0) isn't meaningfully testable: scipy's shapiro just returns NaN
+    with a warning for it, and comparing NaN <= alpha is always False in
+    Python, which would silently report "normal" and route to a
+    parametric test on degenerate data. Treat those groups as failing
+    normality directly instead -- the same nonparametric fallback real
+    non-normal data would get, without the warning spam or the silent
+    mis-routing."""
     for values in group_values.values():
+        if len(values) < 3 or np.ptp(values) == 0:
+            return False
         _, p = sps.shapiro(values)
         if p <= alpha:
             return False

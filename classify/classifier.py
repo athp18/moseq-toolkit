@@ -22,9 +22,15 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 ALR_EPSILON = 1e-6
 
 
-def _balanced_accuracy(y_true, y_pred):
-    """Mean per-class recall, same as sklearn's balanced_accuracy_score but without its warning."""
-    C = confusion_matrix(y_true, y_pred)
+def _balanced_accuracy(y_true, y_pred, labels=None):
+    """Mean per-class recall, same as sklearn's balanced_accuracy_score but
+    without its warning. `labels` should be the full 0..n_classes-1 label
+    set when known (e.g. one CV fold, or a permutation-test shuffle, can
+    easily end up with only one class present) -- without it, sklearn infers
+    the label set from whatever's actually in y_true/y_pred, which both
+    warns ("a single label was found") and silently returns a smaller
+    matrix than n_classes x n_classes for that fold."""
+    C = confusion_matrix(y_true, y_pred, labels=labels)
     with np.errstate(divide="ignore", invalid="ignore"):
         per_class_recall = np.diag(C) / C.sum(axis=1)
     per_class_recall = per_class_recall[~np.isnan(per_class_recall)]
@@ -205,10 +211,17 @@ def _cv_scores(
         y_pred = pipeline.predict(X[test_idx])
         y_true = y[test_idx]
 
-        fold_scores["macro_f1"].append(f1_score(y_true, y_pred, average="macro", zero_division=0))
-        fold_scores["balanced_accuracy"].append(_balanced_accuracy(y_true, y_pred))
-        fold_scores["precision_macro"].append(precision_score(y_true, y_pred, average="macro", zero_division=0))
-        fold_scores["recall_macro"].append(recall_score(y_true, y_pred, average="macro", zero_division=0))
+        class_labels = np.arange(n_classes)
+        fold_scores["macro_f1"].append(
+            f1_score(y_true, y_pred, labels=class_labels, average="macro", zero_division=0)
+        )
+        fold_scores["balanced_accuracy"].append(_balanced_accuracy(y_true, y_pred, labels=class_labels))
+        fold_scores["precision_macro"].append(
+            precision_score(y_true, y_pred, labels=class_labels, average="macro", zero_division=0)
+        )
+        fold_scores["recall_macro"].append(
+            recall_score(y_true, y_pred, labels=class_labels, average="macro", zero_division=0)
+        )
 
         proba_fold = pipeline.predict_proba(X[test_idx])
         # remap fold-local classes_ order onto full 0..n_classes-1 columns
@@ -232,7 +245,12 @@ def _cv_scores(
     except ValueError:
         auroc_macro = np.nan
 
-    cm = confusion_matrix(oof_true, oof_pred, normalize="true")
+    # Explicit labels so the matrix is always n_classes x n_classes, even if
+    # a class is genuinely never predicted (or, rarer, never a true label)
+    # across every pooled out-of-fold row -- otherwise confusion_matrix
+    # silently drops that row/column, and the result no longer lines up
+    # with run()'s "classes" list used to label the plot's axes.
+    cm = confusion_matrix(oof_true, oof_pred, labels=np.arange(n_classes), normalize="true")
 
     return {
         "fold_scores": fold_scores,
