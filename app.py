@@ -7,7 +7,7 @@ import io
 import numpy as np
 import pandas as pd
 import streamlit as st
-from matplotlib.figure import Figure as MplFigure
+import matplotlib as mpl
 
 from ingest.from_moseq_df import load_moseq_df
 from features.clusters import assign_clusters
@@ -53,7 +53,7 @@ def _df_download_button(df, label, filename):
 
 def _show_plot(fig, filename):
     """Render a Plotly or matplotlib figure with a matching download button."""
-    if isinstance(fig, MplFigure):
+    if isinstance(fig, mpl.Figure):
         st.pyplot(fig, use_container_width=True)
         buf = io.BytesIO()
         fig.savefig(buf, format="pdf", bbox_inches="tight")
@@ -66,15 +66,8 @@ def _show_plot(fig, filename):
 
 def _cached_result(cache_key, context, build_fn):
     """Reuse a previously-built result (a figure, a stats table, ...) from
-    session_state if `context` (a hashable fingerprint of everything it
-    depends on) hasn't changed since last time. Streamlit reruns this whole
-    script on ANY widget interaction anywhere in the app -- every tab's body
-    executes every rerun, not just the visible one -- so without this, every
-    plot already on screen (matplotlib + statannotations rendering in
-    particular, and the stats tests behind it) would regenerate from scratch
-    on every unrelated click, which is what made even a trivial change like
-    flipping a radio button feel slow once any plot or classifier run was
-    showing."""
+    session_state 
+    """
     cached = st.session_state.get(cache_key)
     if cached is not None and cached["context"] == context:
         return cached["result"]
@@ -123,7 +116,6 @@ def _render_pipeline_status():
             st.metric("Syllables", n_syl)
 
 
-# Fixed quadrant order matching features.clusters.assign_clusters's labels.
 _CLUSTER_LABEL_ORDER = ["motor improvement", "motor deficit", "cognitive improvement", "cognitive deficit"]
 
 
@@ -139,15 +131,8 @@ def _sorted_feature_names(names, feature_types):
 
 def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_prefix, timepoint=None, filters=None):
     """Plot a group comparison for one feature_name, with stats annotated on
-    the bars; the full multi-feature stats table loads on demand. `filters`
-    (e.g. {"treatment": "saline"}) pins every other grouping variable to one
-    value first -- e.g. group_col="timepoint" + filters={"treatment": "saline"}
-    compares baseline vs 7dpi vs 30dpi within saline subjects only, instead of
-    pooling every treatment together at each timepoint. `timepoint`, when
-    given, additionally restricts the single-feature plot + its annotation
-    stats to that one timepoint -- pooling a longitudinal dataset's timepoints
-    into one bar would mix a subject's repeated visits together as if they
-    were independent samples. The full stats table below is built from the
+    the bars; the full multi-feature stats table loads on demand. 
+    The full stats table below is built from the
     same filtered data but still covers every timepoint (compare_groups
     stratifies it automatically)."""
     if filters:
@@ -247,8 +232,6 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
         source_label = next(iter(source_options))
     source_df = source_options[source_label]
 
-    # Drop stale feature_name selection when the source changes, so the
-    # selectbox doesn't raise on an option that no longer exists.
     if st.session_state.get(source_state_key) != source_label:
         st.session_state.pop(feature_name_key, None)
         st.session_state[source_state_key] = source_label
@@ -258,21 +241,11 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
             "Feature", options=sorted(source_df["feature_name"].unique(), key=str), key=feature_name_key,
         )
     with c3:
-        # "timepoint" is a structural column present in every long-format table
-        # regardless of which group_cols were selected at load time, so it's
-        # always offered here even when group_cols is empty.
         grouping_options = ["timepoint"] + [c for c in group_cols if c != "timepoint"]
         group_col = st.selectbox("Grouping variable", options=grouping_options, key=group_col_key)
     with c4:
         paired = st.checkbox("Paired", key=paired_key, help="Treat this as a paired-samples comparison.")
 
-    # Pin any other grouping variable(s) besides the one being compared -- e.g.
-    # group_col="timepoint" + Filter treatment="saline" compares baseline vs
-    # 7dpi vs 30dpi within saline subjects only, instead of pooling both
-    # treatments together at each timepoint. Defaults to "All" (no filter, the
-    # previous pooled behavior) for every dimension except timepoint, which is
-    # handled separately below since pooling it isn't just a marginalization
-    # choice -- it mixes a subject's repeated visits into one sample.
     filter_dims = [c for c in group_cols if c not in (group_col, "timepoint") and c in source_df.columns]
     filters = {}
     if filter_dims:
@@ -284,12 +257,6 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
                 if chosen != "All":
                     filters[col] = chosen
 
-    # Longitudinal dataset (more than one distinct timepoint) + a non-timepoint
-    # grouping variable: plotting/annotating one bar per group_col category
-    # would otherwise pool every timepoint's rows together, mixing a subject's
-    # repeated visits into the same bar as if they were independent samples.
-    # compare_groups' full stats table below stratifies by timepoint on its
-    # own; this selector is only for the single-feature plot above it.
     timepoint_key = f"{key_prefix}_timepoint"
     timepoint = None
     if group_col != "timepoint" and "timepoint" in source_df.columns and source_df["timepoint"].nunique() > 1:
@@ -393,11 +360,6 @@ if uploaded is not None:
         st.sidebar.error(f"Could not read file: {e}")
 
 if raw_df is not None:
-    # "timepoint" and "SubjectName" are structural columns load_moseq_df already
-    # handles on its own (renamed to subject_id, or promoted to its own dedicated
-    # column) -- selecting either here as a "group_col" collides with that and
-    # breaks loading. "timepoint" is always available as a Grouping variable
-    # everywhere below without needing to be added here.
     _structural_cols = {"timepoint", "SubjectName"}
     candidate_group_cols = [
         c for c in raw_df.columns
@@ -479,7 +441,7 @@ st.divider()
 
 if not data_loaded:
     st.info(
-        "Upload a raw classic-MoSeq per-frame dataset (CSV or Parquet) in the sidebar, "
+        "Upload a MoSeq per-frame dataset (CSV or Parquet) in the sidebar, "
         "pick your grouping variables and velocity column, then click **Load data** to get started."
     )
     st.markdown(
@@ -657,8 +619,7 @@ with tab_scalars:
                 "A distributional feature -- the full per-subject shape of a metric's frame-level values "
                 "(as a proportion-per-bin vector), rather than the single per-subject mean computed above. "
                 "Bin edges are shared across every subject so histograms stay comparable. Select as many "
-                "metrics as you want below and compute all of their histograms in one click, instead of "
-                "one metric at a time."
+                "metrics as you want below and compute all of their histograms in one click."
             )
         hist_metrics = st.multiselect("Metrics to histogram", options=scalar_cols, key="hist_metrics")
 
@@ -729,10 +690,10 @@ with tab_transitions:
                 key="n_syllables_override_value",
                 help=(
                     f"Full coverage for the currently loaded data is {inferred_n_syllables} "
-                    f"(labels 0..{inferred_n_syllables - 1}). A SMALLER value restricts coverage: "
+                    f"(labels 0..{inferred_n_syllables - 1}). A smaller value restricts coverage: "
                     "any transition touching an excluded syllable (label >= this value) is dropped, "
                     "not bridged over -- so a syllable's row only reflects transitions that were "
-                    "genuinely, immediately consecutive to another included syllable. A LARGER value "
+                    "genuinely, immediately consecutive to another included syllable. A larger value "
                     "only makes sense if your MoSeq model was fit with more syllables than actually "
                     "appear in this dataset."
                 ),
@@ -741,7 +702,7 @@ with tab_transitions:
             n_syllables_input = None
             st.caption(
                 f"Inferred from current data: {inferred_n_syllables} syllables "
-                f"(labels 0..{inferred_n_syllables - 1})."
+                f"(labels 0...{inferred_n_syllables - 1})."
             )
 
         if st.button("Compute transition matrices", type="primary"):
@@ -983,7 +944,6 @@ with tab_classify:
                 st.caption(f"{len(st.session_state['feature_sets'])} feature set(s) defined:")
                 rows = []
                 for name, spec in st.session_state["feature_sets"]:
-                    # spec is either a plain list of feature_types (legacy) or a dict
                     if isinstance(spec, dict):
                         ftypes = spec["feature_types"]
                         fnames = spec.get("feature_names")
