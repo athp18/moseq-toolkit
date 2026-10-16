@@ -53,7 +53,7 @@ def _df_download_button(df, label, filename):
 
 def _show_plot(fig, filename):
     """Render a Plotly or matplotlib figure with a matching download button."""
-    if isinstance(fig, mpl.Figure):
+    if isinstance(fig, mpl.figure.Figure):
         st.pyplot(fig, use_container_width=True)
         buf = io.BytesIO()
         fig.savefig(buf, format="pdf", bbox_inches="tight")
@@ -129,15 +129,17 @@ def _sorted_feature_names(names, feature_types):
     return sorted(names, key=str)
 
 
-def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_prefix, timepoint=None, filters=None):
+def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_prefix, timepoint=None, filters=None, group_values=None, test_mode="auto"):
     """Plot a group comparison for one feature_name, with stats annotated on
-    the bars; the full multi-feature stats table loads on demand. 
+    the bars; the full multi-feature stats table loads on demand.
     The full stats table below is built from the
     same filtered data but still covers every timepoint (compare_groups
     stratifies it automatically)."""
     if filters:
         for col, val in filters.items():
             data_df = data_df[data_df[col] == val]
+    if group_values is not None and group_col in data_df.columns:
+        data_df = data_df[data_df[group_col].isin(group_values)]
 
     sub = data_df[data_df["feature_name"] == feature_name]
     if timepoint is not None:
@@ -150,12 +152,13 @@ def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_pr
     palette = st.session_state["plot_palette"]
     plot_context = (
         feature_name, group_col, paired, timepoint, tuple(sorted((filters or {}).items())),
-        plot_style, palette, PLOT_TEMPLATE, len(sub), tuple(sub.columns),
+        tuple(sorted(group_values)) if group_values is not None else None,
+        test_mode, plot_style, palette, PLOT_TEMPLATE, len(sub), tuple(sub.columns),
         int(pd.util.hash_pandas_object(sub["value"]).sum()),
     )
 
     def _build():
-        stats_result = compare_groups(sub, group_col, paired=paired)
+        stats_result = compare_groups(sub, group_col, paired=paired, test_mode=test_mode)
         if plot_style == "notebook":
             built_fig = mpl_plots.mpl_group_comparison(
                 sub, feature_name, group_col,
@@ -178,12 +181,12 @@ def _plot_comparison_with_stats(data_df, feature_name, group_col, paired, key_pr
     context_key = f"{key_prefix}_stats_table_context"
     current_context = (
         group_col, paired, timepoint, tuple(sorted((filters or {}).items())),
-        tuple(sorted(data_df["feature_name"].astype(str).unique())),
+        test_mode, tuple(sorted(data_df["feature_name"].astype(str).unique())),
     )
 
     if st.button("See stats for all features", key=f"{table_key}_button"):
         try:
-            st.session_state[table_key] = compare_groups(data_df, group_col, paired=paired)
+            st.session_state[table_key] = compare_groups(data_df, group_col, paired=paired, test_mode=test_mode)
             st.session_state[context_key] = current_context
         except Exception as e:
             st.error(str(e))
@@ -222,13 +225,13 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
 
     multi_source = len(source_options) > 1
     if multi_source:
-        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 2])
         with c1:
             source_label = st.selectbox(
                 "Feature source", options=list(source_options.keys()), key=f"{key_prefix}_source",
             )
     else:
-        c2, c3, c4 = st.columns([2, 2, 1])
+        c2, c3, c4, c5 = st.columns([2, 2, 1, 2])
         source_label = next(iter(source_options))
     source_df = source_options[source_label]
 
@@ -245,6 +248,33 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
         group_col = st.selectbox("Grouping variable", options=grouping_options, key=group_col_key)
     with c4:
         paired = st.checkbox("Paired", key=paired_key, help="Treat this as a paired-samples comparison.")
+    with c5:
+        test_mode = st.selectbox(
+            "Statistical test",
+            options=["auto", "parametric", "nonparametric"],
+            format_func={"auto": "Auto (normality check)", "parametric": "Parametric (t-test / ANOVA)", "nonparametric": "Non-parametric (Mann-Whitney / Kruskal)"}.get,
+            key=f"{key_prefix}_test_mode",
+            help="Auto: Shapiro-Wilk normality check selects parametric vs non-parametric per feature. "
+                 "Parametric: always t-test / one-way ANOVA. "
+                 "Non-parametric: always Mann-Whitney U / Kruskal-Wallis.",
+        )
+
+    # Group-value filter: let the user include only a subset of the group_col's values.
+    group_values_key = f"{key_prefix}_group_values"
+    if group_col in source_df.columns:
+        all_group_values = natural_sort(source_df[group_col].dropna().unique())
+        if len(all_group_values) > 1:
+            selected_group_values = st.multiselect(
+                f"Include groups ({group_col})",
+                options=all_group_values,
+                default=all_group_values,
+                key=group_values_key,
+                help="Deselect any groups you want to exclude from the plot and stats.",
+            )
+        else:
+            selected_group_values = all_group_values
+    else:
+        selected_group_values = None
 
     filter_dims = [c for c in group_cols if c not in (group_col, "timepoint") and c in source_df.columns]
     filters = {}
@@ -271,7 +301,8 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
     if st.button("Plot", key=plot_button_key, disabled=group_col is None):
         st.session_state[selection_key] = dict(
             source_label=source_label, feature_name=feature_name, group_col=group_col, paired=paired,
-            timepoint=timepoint, filters=filters,
+            timepoint=timepoint, filters=filters, group_values=selected_group_values,
+            test_mode=test_mode,
         )
 
     # Read from session_state, not the button's own `if`, so it survives reruns.
@@ -286,6 +317,7 @@ def render_comparison_section(source_options, group_cols, key_prefix, empty_mess
             _plot_comparison_with_stats(
                 sel_source_df, sel["feature_name"], sel["group_col"], sel["paired"], stats_key_prefix,
                 timepoint=sel.get("timepoint"), filters=sel.get("filters"),
+                group_values=sel.get("group_values"), test_mode=sel.get("test_mode", "auto"),
             )
         except ValueError as e:
             st.error(str(e))
@@ -444,6 +476,111 @@ if not data_loaded:
         "Upload a MoSeq per-frame dataset (CSV or Parquet) in the sidebar, "
         "pick your grouping variables and velocity column, then click **Load data** to get started."
     )
+
+    with st.expander("How to prepare your data: MoSeq pipeline", expanded=True):
+        st.markdown(
+            "This toolkit starts from the **`moseq_df` dataframe** produced by the MoSeq Analysis & "
+            "Visualization notebook. If you already have that file exported as a CSV or Parquet, "
+            "skip to the sidebar. If you're starting from raw depth recordings, follow the steps below."
+        )
+
+        st.markdown("---")
+
+        # Step 1
+        st.markdown("#### Step 1 — Install MoSeq2")
+        st.markdown(
+            "Install MoSeq2 and its dependencies into a Conda environment. "
+            "The recommended approach uses the `moseq2-app` package, which bundles the extract, "
+            "PCA, modeling, and analysis notebooks in one place.\n\n"
+            "→ **[Install MoSeq2 on Windows using Conda](https://github.com/dattalab/moseq2-app/wiki/Install-MoSeq2-on-Windows-using-Conda)**"
+        )
+
+        st.markdown("---")
+
+        # Step 2
+        st.markdown("#### Step 2 — Organize your raw recordings")
+        st.markdown(
+            "Create a directory of your choice to hold all your recordings — we'll call it "
+            "`<base_dir>` (e.g. `~/my_experiment/`). Copy all your recording sessions into it, "
+            "one subfolder per session, each containing three files:"
+        )
+        st.code(
+            ".                   \n"
+            "└── <base_dir>/\n"
+            "    ├── session_1/\n"
+            "    │   ├── depth.avi\n"
+            "    │   ├── depth_ts.txt\n"
+            "    │   └── metadata.json\n"
+            "    ...\n"
+            "    └── session_n/\n"
+            "        ├── depth.avi\n"
+            "        ├── depth_ts.txt\n"
+            "        └── metadata.json",
+            language=None,
+        )
+        st.markdown(
+            "- **`depth.avi`** — raw depth frames from the Kinect sensor  \n"
+            "- **`depth_ts.txt`** — per-frame timestamps  \n"
+            "- **`metadata.json`** — session metadata (subject ID, group, etc.)  \n\n"
+            "Download the MoSeq notebooks and save them into `<base_dir>` so that extraction "
+            "and modeling outputs are organized alongside the raw data:\n\n"
+            "- **[MoSeq2-Extract-Modeling-Notebook.ipynb](https://github.com/dattalab/moseq2-app/blob/release/notebooks/MoSeq2-Extract-Modeling-Notebook.ipynb)** "
+            "→ save as `<base_dir>/MoSeq2-Extract-Modeling-Notebook.ipynb`\n"
+            "- **[MoSeq2-Analysis-Visualization-Notebook.ipynb](https://github.com/dattalab/moseq2-app/blob/release/notebooks/MoSeq2-Analysis-Visualization-Notebook.ipynb)** "
+            "→ save as `<base_dir>/MoSeq2-Analysis-Visualization-Notebook.ipynb`"
+        )
+
+        st.markdown("---")
+
+        # Step 3
+        st.markdown("#### Step 3 — Extract & Model")
+        st.markdown(
+            "Open the **Extract & Modeling notebook** and run it from `<base_dir>`. "
+            "It will:\n"
+            "1. Detect and crop the animal from each depth frame (background subtraction, ROI alignment)\n"
+            "2. Compute PCA across all sessions\n"
+            "3. Fit an AR-HMM on the PCA scores to discover behavioral syllables\n"
+            "4. Apply the trained model back to every session to assign per-frame syllable labels\n\n"
+            "→ **[Download: MoSeq2-Extract-Modeling-Notebook.ipynb](https://github.com/dattalab/moseq2-app/blob/release/notebooks/MoSeq2-Extract-Modeling-Notebook.ipynb)** "
+            "(save to `<base_dir>/`)  \n"
+            "→ **[Extract & Modeling Notebook Instructions](https://github.com/dattalab/moseq2-app/wiki/MoSeq2-Extract-Modeling-Notebook-Instructions)**"
+        )
+
+        st.markdown("---")
+
+        # Step 4
+        st.markdown("#### Step 4 — Analyze & export `moseq_df`")
+        st.markdown(
+            "Open the **Analysis & Visualization notebook**. It will assemble the per-frame "
+            "dataframe (`moseq_df`) combining syllable labels, kinematics, and session metadata "
+            "across all subjects. **Export `moseq_df` as a CSV or Parquet — that is the file you upload here.**\n\n"
+            "→ **[Download: MoSeq2-Analysis-Visualization-Notebook.ipynb](https://github.com/dattalab/moseq2-app/blob/release/notebooks/MoSeq2-Analysis-Visualization-Notebook.ipynb)** "
+            "(save to `<base_dir>/`)  \n"
+            "→ **[Analysis & Visualization Notebook Instructions](https://github.com/dattalab/moseq2-app/wiki/MoSeq2-Analysis-Visualization-Notebook-Instructions)**"
+        )
+
+        st.markdown("---")
+        st.markdown("**Expected columns in the uploaded file**")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(
+                "**Required**\n"
+                "- `SubjectName` — animal identifier\n"
+                "- `SessionName` — session/recording identifier\n"
+                "- `frame index` — frame number within session\n"
+                "- `labels (usage sort)` — integer syllable label per frame\n"
+                "- at least one kinematic column (velocity, area, etc.)"
+            )
+        with col2:
+            st.markdown(
+                "**Optional**\n"
+                "- `timepoint` — visit label for longitudinal studies; "
+                "if present, comparisons are stratified by timepoint automatically\n"
+                "- any experimental metadata columns to use as grouping variables "
+                "(treatment, genotype, sex, cohort, …)"
+            )
+        st.caption("Accepted formats: CSV or Parquet. Extra columns are ignored.")
+
     st.markdown(
         "Once data is loaded, this walks you through: assigning behavioral clusters, "
         "comparing feature usage across groups, computing scalar and histogram summaries, "
